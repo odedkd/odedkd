@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Claude Code UI — Multi-Bot Web Interface">
+    <title>Claude Code UI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#1e3a5f">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <button class="btn-icon" id="btn-send" title="שלח">
+                    <span>▶</span> שלח
+                </button>
+                <button class="btn-icon" id="btn-add" title="הוסף">+</button>
+                <button class="btn-icon" id="btn-settings" title="הגדרות">⚙</button>
+            </div>
+            <div class="header-right">
+                <select id="bot-selector" class="bot-selector">
+                    <option value="claude-code">Claude Code</option>
+                    <option value="hafak">HafakR104</option>
+                </select>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <!-- Left panel: Input -->
+            <div class="panel input-panel">
+                <div class="panel-header">
+                    <span>הקלד או הדבק</span>
+                    <div class="panel-actions">
+                        <button class="btn-icon" id="btn-upload" title="העלה קובץ">📎</button>
+                    </div>
+                </div>
+                <textarea id="input-area" class="input-area" placeholder="הקלד את שאלתך כאן..."></textarea>
+                <input type="file" id="file-upload" style="display: none;">
+                <div class="status-bar" id="status-bar">
+                    מודל: <span id="model-name">claude-sonnet-4-6</span> |
+                    חשיבה: <span id="thinking-mode">כבויה</span> |
+                    מאמץ: <span id="effort-level">מאוזן</span>
+                </div>
+            </div>
+
+            <!-- Resizer -->
+            <div class="resizer" id="resizer"></div>
+
+            <!-- Right panel: Output -->
+            <div class="panel output-panel">
+                <div class="panel-header">
+                    <span>תוצאות</span>
+                    <div class="panel-actions">
+                        <button class="btn-icon" id="btn-copy" title="העתק">📋</button>
+                        <button class="btn-icon" id="btn-restart" title="הפעל מחדש">🔄</button>
+                    </div>
+                </div>
+                <div id="output-area" class="output-area">
+                    <p class="placeholder">התוצאות יופיעו כאן...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast"></div>
+
+    <script src="{{ url_for('static', filename='sw.js') }}"></script>
+    <script>
+        // ============================================
+        // State
+        // ============================================
+        let currentBot = localStorage.getItem('selectedBot') || 'claude-code';
+        let currentTaskId = null;
+
+        // ============================================
+        // Bot selector
+        // ============================================
+        const botSelector = document.getElementById('bot-selector');
+        botSelector.value = currentBot;
+        botSelector.addEventListener('change', (e) => {
+            currentBot = e.target.value;
+            localStorage.setItem('selectedBot', currentBot);
+        });
+
+        // ============================================
+        // File upload
+        // ============================================
+        const fileUpload = document.getElementById('file-upload');
+        const btnUpload = document.getElementById('btn-upload');
+
+        btnUpload.addEventListener('click', () => {
+            fileUpload.click();
+        });
+
+        fileUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                uploadFile(file);
+            }
+        });
+
+        // Ctrl+V paste images
+        document.addEventListener('paste', (e) => {
+            const items = e.clipboardData?.items;
+            if (items) {
+                for (let item of items) {
+                    if (item.kind === 'file' && item.type.startsWith('image/')) {
+                        const file = item.getAsFile();
+                        uploadFile(file);
+                    }
+                }
+            }
+        });
+
+        function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showToast('שגיאה בהעלאה: ' + data.error, 'error');
+                } else {
+                    showToast('קובץ הועלה בהצלחה: ' + data.filename, 'success');
+                    const inputArea = document.getElementById('input-area');
+                    inputArea.value += `\n[העלאה: ${data.filename}]`;
+                }
+            })
+            .catch(err => {
+                showToast('שגיאה: ' + err.message, 'error');
+            });
+        }
+
+        // ============================================
+        // Submit task
+        // ============================================
+        const inputArea = document.getElementById('input-area');
+        const btnSend = document.getElementById('btn-send');
+
+        btnSend.addEventListener('click', () => {
+            const prompt = inputArea.value.trim();
+            if (!prompt) {
+                showToast('הקלד משהו בתחילה', 'warning');
+                return;
+            }
+
+            submitTask(prompt);
+        });
+
+        // Enter to send (Shift+Enter = newline)
+        inputArea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                btnSend.click();
+            }
+        });
+
+        function submitTask(prompt) {
+            const endpoint = currentBot === 'hafak' ? '/submit-hafak' : '/submit';
+            btnSend.disabled = true;
+            showToast('שליחה...', 'info');
+
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showToast('שגיאה: ' + data.error, 'error');
+                    btnSend.disabled = false;
+                } else {
+                    currentTaskId = data.task_id;
+                    inputArea.value = '';
+                    showToast('משימה נשלחה בהצלחה', 'success');
+                    pollTaskStatus(currentTaskId);
+                }
+            })
+            .catch(err => {
+                showToast('שגיאה: ' + err.message, 'error');
+                btnSend.disabled = false;
+            });
+        }
+
+        function pollTaskStatus(taskId) {
+            const maxAttempts = 300; // 5 minutes with 1s intervals
+            let attempts = 0;
+
+            const pollInterval = setInterval(() => {
+                attempts++;
+
+                fetch(`/task/${taskId}`)
+                    .then(r => r.json())
+                    .then(task => {
+                        if (task.status === 'done' || task.status === 'error' || task.status === 'cancelled') {
+                            clearInterval(pollInterval);
+                            displayResult(task);
+                            btnSend.disabled = false;
+                        } else if (attempts >= maxAttempts) {
+                            clearInterval(pollInterval);
+                            showToast('תם הזמן המוקצה', 'error');
+                            btnSend.disabled = false;
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Poll error:', err);
+                    });
+            }, 1000);
+        }
+
+        function displayResult(task) {
+            const outputArea = document.getElementById('output-area');
+            const statusClass = task.status === 'error' ? 'error' : 'success';
+
+            let html = `<div class="result ${statusClass}">`;
+            html += `<strong>${task.bot}</strong> — ${task.status.toUpperCase()}<br>`;
+
+            if (task.result) {
+                html += `<pre>${escapeHtml(task.result)}</pre>`;
+            }
+
+            if (task.error) {
+                html += `<pre style="color: #ff6b6b;">שגיאה: ${escapeHtml(task.error)}</pre>`;
+            }
+
+            html += `</div>`;
+
+            outputArea.innerHTML = html;
+            showToast('משימה הסתיימה', 'success');
+        }
+
+        // ============================================
+        // COPY BUTTON — FIXED
+        // ============================================
+        const btnCopy = document.getElementById('btn-copy');
+
+        btnCopy.addEventListener('click', async () => {
+            const outputArea = document.getElementById('output-area');
+            const text = outputArea.innerText;
+
+            if (!text || text === 'התוצאות יופיעו כאן...') {
+                showToast('אין תוצאה להעתקה', 'warning');
+                return;
+            }
+
+            try {
+                // Try modern Clipboard API first
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                    showToast('הועתק ללוח!', 'success');
+                    btnCopy.innerHTML = '✅';
+                    setTimeout(() => { btnCopy.innerHTML = '📋'; }, 1500);
+                } else {
+                    // Fallback for older browsers
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    showToast('הועתק ללוח!', 'success');
+                    btnCopy.innerHTML = '✅';
+                    setTimeout(() => { btnCopy.innerHTML = '📋'; }, 1500);
+                }
+            } catch (err) {
+                console.error('Copy error:', err);
+                showToast('שגיאה בהעתקה: ' + err.message, 'error');
+            }
+        });
+
+        // ============================================
+        // Hard restart
+        // ============================================
+        const btnRestart = document.getElementById('btn-restart');
+
+        btnRestart.addEventListener('click', () => {
+            if (!confirm('בטל את כל המשימות התקועות?')) {
+                return;
+            }
+
+            fetch('/hard-restart', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    showToast(`בוטלו ${data.cancelled} משימות`, 'info');
+                })
+                .catch(err => {
+                    showToast('שגיאה: ' + err.message, 'error');
+                });
+        });
+
+        // ============================================
+        // Vertical resizer
+        // ============================================
+        const resizer = document.getElementById('resizer');
+        const inputPanel = document.querySelector('.input-panel');
+        const outputPanel = document.querySelector('.output-panel');
+        const mainContent = document.querySelector('.main-content');
+        let isResizing = false;
+
+        resizer.addEventListener('mousedown', () => {
+            isResizing = true;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const rect = mainContent.getBoundingClientRect();
+            const newInputHeight = e.clientY - rect.top;
+
+            if (newInputHeight > 100 && newInputHeight < rect.height - 100) {
+                inputPanel.style.flex = `0 0 ${newInputHeight}px`;
+                outputPanel.style.flex = '1';
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            isResizing = false;
+        });
+
+        // ============================================
+        // Settings bar
+        // ============================================
+        function loadSettings() {
+            fetch('/api/settings')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('model-name').textContent = data.model;
+                    document.getElementById('thinking-mode').textContent = data.thinking ? 'מופעלת' : 'כבויה';
+                    document.getElementById('effort-level').textContent = data.effort;
+                })
+                .catch(err => console.error('Settings load error:', err));
+        }
+
+        // Load settings on startup
+        loadSettings();
+
+        // ============================================
+        // Toast notification
+        // ============================================
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = `toast show ${type}`;
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // ============================================
+        // Utilities
+        // ============================================
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ============================================
+        // Service Worker
+        // ============================================
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js').catch(err => {
+                console.log('SW registration failed:', err);
+            });
+        }
+    </script>
+</body>
+</html>
