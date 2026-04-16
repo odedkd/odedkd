@@ -217,11 +217,26 @@ def process_claude_code_task(task_id):
     save_queue(queue)
 
     try:
-        # Simulate Claude Code execution (in real scenario, use subprocess to call claude CLI)
-        result = f"Processed: {task['prompt'][:100]}..."
+        proc = subprocess.run(
+            ['claude', '-p', task['prompt'], '--output-format', 'text',
+             '--dangerously-skip-permissions'],
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_CODE_TIMEOUT,
+            cwd='/tmp'
+        )
 
-        task['status'] = 'done'
-        task['result'] = result
+        if proc.returncode == 0:
+            task['status'] = 'done'
+            task['result'] = proc.stdout.strip()
+        else:
+            task['status'] = 'error'
+            task['error'] = proc.stderr.strip() or f'Exit code: {proc.returncode}'
+
+        task['completed_at'] = datetime.now().isoformat()
+    except subprocess.TimeoutExpired:
+        task['status'] = 'error'
+        task['error'] = f'תם הזמן המוקצב ({CLAUDE_CODE_TIMEOUT}s)'
         task['completed_at'] = datetime.now().isoformat()
     except Exception as e:
         task['status'] = 'error'
