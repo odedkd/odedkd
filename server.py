@@ -8,6 +8,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 import json
 import os
 import uuid
+import ipaddress
 import subprocess
 import threading
 import time
@@ -46,17 +47,36 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# IP allowlist (Tailscale + localhost)
+# IP allowlist: loopback + Tailscale only (CGNAT 100.64.0.0/10 and IPv6 ULA fd7a:115c:a1e0::/48).
+# A plain '100.' string prefix would wrongly admit public 100.0.0.0/8 addresses, so match the
+# real network ranges — this is the only gate in front of /submit, which spawns a real local agent.
+TAILSCALE_RANGES = (
+    ipaddress.ip_network('100.64.0.0/10'),
+    ipaddress.ip_network('fd7a:115c:a1e0::/48'),
+)
+
+def _is_allowed_ip(ip):
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_loopback or any(addr in net for net in TAILSCALE_RANGES)
+
 def require_tailscale(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        ip = request.remote_addr
-        if not (ip in ('127.0.0.1', '::1') or ip.startswith('100.')):
+        if not _is_allowed_ip(request.remote_addr):
             return jsonify({'error': 'Access denied'}), 403
         return f(*args, **kwargs)
     return decorated_function
 
-# Task queue management
+# Task queue management.
+# All read-modify-write sequences take _queue_lock; save_queue writes atomically
+# (temp file + os.replace) so concurrent readers never observe a half-written file.
+_queue_lock = threading.Lock()
+
 def load_queue():
     if os.path.exists(QUEUE_FILE):
         with open(QUEUE_FILE, 'r') as f:
@@ -64,8 +84,10 @@ def load_queue():
     return []
 
 def save_queue(queue):
-    with open(QUEUE_FILE, 'w') as f:
+    tmp = QUEUE_FILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(queue, f, indent=2)
+    os.replace(tmp, QUEUE_FILE)
 
 def log_task(task):
     with open(os.path.join(LOGS_DIR, 'tasks.log'), 'a') as f:
@@ -147,12 +169,12 @@ def submit_task():
         'bot': 'Claude Code'
     }
 
-    queue = load_queue()
-    if len(queue) >= MAX_QUEUE_SIZE:
-        return jsonify({'error': 'Queue full'}), 429
-
-    queue.append(task)
-    save_queue(queue)
+    with _queue_lock:
+        queue = load_queue()
+        if len(queue) >= MAX_QUEUE_SIZE:
+            return jsonify({'error': 'Queue full'}), 429
+        queue.append(task)
+        save_queue(queue)
     log_task(task)
 
     # Process asynchronously
@@ -182,12 +204,12 @@ def submit_hafak():
         'bot': 'HafakR104'
     }
 
-    queue = load_queue()
-    if len(queue) >= MAX_QUEUE_SIZE:
-        return jsonify({'error': 'Queue full'}), 429
-
-    queue.append(task)
-    save_queue(queue)
+    with _queue_lock:
+        queue = load_queue()
+        if len(queue) >= MAX_QUEUE_SIZE:
+            return jsonify({'error': 'Queue full'}), 429
+        queue.append(task)
+        save_queue(queue)
     log_task(task)
 
     threading.Thread(target=process_hafak_task, args=(task_id,)).start()
@@ -197,16 +219,15 @@ def submit_hafak():
 @app.route('/hard-restart', methods=['POST'])
 @require_tailscale
 def hard_restart():
-    queue = load_queue()
-    cancelled_count = 0
-
-    for task in queue:
-        if task['status'] in ('running', 'queued'):
-            task['status'] = 'cancelled'
-            task['completed_at'] = datetime.now().isoformat()
-            cancelled_count += 1
-
-    save_queue(queue)
+    with _queue_lock:
+        queue = load_queue()
+        cancelled_count = 0
+        for task in queue:
+            if task['status'] in ('running', 'queued'):
+                task['status'] = 'cancelled'
+                task['completed_at'] = datetime.now().isoformat()
+                cancelled_count += 1
+        save_queue(queue)
     return jsonify({'cancelled': cancelled_count}), 200
 
 @app.route('/download/<task_id>', methods=['GET'])
@@ -220,15 +241,16 @@ def download_result(task_id):
 
 # Task processing
 def _set_task(task_id, **fields):
-    """Reload the queue, patch one task's fields, and save. Reloading each time
-    avoids clobbering other in-flight tasks now that real agent runs take a while."""
-    queue = load_queue()
-    task = next((t for t in queue if t['id'] == task_id), None)
-    if task is None:
-        return None
-    task.update(fields)
-    save_queue(queue)
-    return task
+    """Atomically reload the queue, patch one task's fields, and save — holding
+    _queue_lock so concurrent workers/requests don't clobber each other's updates."""
+    with _queue_lock:
+        queue = load_queue()
+        task = next((t for t in queue if t['id'] == task_id), None)
+        if task is None:
+            return None
+        task.update(fields)
+        save_queue(queue)
+        return task
 
 def run_local_claude(prompt, workdir=None, timeout=CLAUDE_CODE_TIMEOUT):
     """Wake a REAL local Claude Code agent: run the claude CLI headlessly in
@@ -269,29 +291,18 @@ def process_claude_code_task(task_id):
                   completed_at=datetime.now().isoformat())
 
 def process_hafak_task(task_id):
-    queue = load_queue()
-    task = next((t for t in queue if t['id'] == task_id), None)
-
-    if not task:
+    task = _set_task(task_id, status='running', started_at=datetime.now().isoformat())
+    if task is None:
         return
 
-    task['status'] = 'running'
-    task['started_at'] = datetime.now().isoformat()
-    save_queue(queue)
-
     try:
-        # Simulate HafakR104 response
+        # Simulate HafakR104 response (R104 wiring is future — see CLAUDE.md)
         result = f"HafakR104 response: {task['prompt'][:100]}..."
-
-        task['status'] = 'done'
-        task['result'] = result
-        task['completed_at'] = datetime.now().isoformat()
+        _set_task(task_id, status='done', result=result,
+                  completed_at=datetime.now().isoformat())
     except Exception as e:
-        task['status'] = 'error'
-        task['error'] = str(e)
-        task['completed_at'] = datetime.now().isoformat()
-
-    save_queue(queue)
+        _set_task(task_id, status='error', error=str(e),
+                  completed_at=datetime.now().isoformat())
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8002, threaded=True)

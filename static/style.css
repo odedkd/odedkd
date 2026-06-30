@@ -31,6 +31,7 @@ html, body {
     display: flex;
     flex-direction: column;
     height: 100vh;
+    height: 100dvh; /* avoids the mobile address-bar cutting off the bottom action bar */
 }
 
 /* Header */
@@ -237,6 +238,90 @@ html, body {
     word-wrap: break-word;
 }
 
+.result .task-prompt {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 8px;
+    padding-right: 8px;
+    border-right: 2px solid var(--border);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.result .meta {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.result.running {
+    background: rgba(59, 130, 246, 0.08);
+    border-color: var(--info);
+}
+
+.spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(148, 163, 184, 0.3);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Primary action bar (big, thumb-friendly send) */
+.input-actions {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: var(--bg-darker);
+    border-top: 1px solid var(--border);
+}
+
+.btn-primary {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 14px 16px;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.btn-primary:hover { background: var(--primary-dark); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-secondary {
+    min-height: 48px;
+    padding: 14px 16px;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 15px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-secondary:hover {
+    border-color: var(--primary);
+    color: var(--text-light);
+}
+
 /* Status bar */
 .status-bar {
     padding: 8px 12px;
@@ -338,21 +423,48 @@ html, body {
     }
 
     .input-panel {
-        flex: 0 0 50%;
+        flex: 0 1 auto;
+        min-height: 0;
+    }
+
+    .input-area {
+        min-height: min(22vh, 150px); /* shrinks in landscape so the output stays visible */
+        font-size: 16px; /* >=16px stops iOS from auto-zooming on focus */
     }
 
     .output-panel {
         flex: 1;
+        min-height: 0;
     }
 
+    .output-area {
+        font-size: 14px;
+    }
+
+    /* The drag-resizer is mouse-only; on touch we just stack the panels */
     .resizer {
-        width: 100%;
-        height: 4px;
-        cursor: row-resize;
+        display: none;
     }
 
     .header {
         flex-wrap: wrap;
+    }
+
+    .header .btn-icon {
+        padding: 10px 14px;
+        font-size: 15px;
+        min-height: 44px;
+    }
+
+    .bot-selector {
+        padding: 10px 12px;
+        font-size: 16px;
+        min-height: 44px;
+    }
+
+    .panel-actions .btn-icon {
+        font-size: 20px;
+        min-height: 44px;
     }
 
     .toast {

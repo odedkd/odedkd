@@ -2,7 +2,7 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Claude Code UI — Multi-Bot Web Interface">
     <title>Claude Code UI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -38,8 +38,12 @@
                         <button class="btn-icon" id="btn-upload" title="העלה קובץ">📎</button>
                     </div>
                 </div>
-                <textarea id="input-area" class="input-area" placeholder="הקלד את שאלתך כאן..."></textarea>
+                <textarea id="input-area" class="input-area" placeholder="מה לעשות על המתקן? (משימה לסוכן המקומי)" enterkeyhint="send"></textarea>
                 <input type="file" id="file-upload" style="display: none;">
+                <div class="input-actions">
+                    <button class="btn-primary" id="btn-send-main"><span>▶</span> שלח משימה</button>
+                    <button class="btn-secondary" id="btn-clear" title="נקה">נקה</button>
+                </div>
                 <div class="status-bar" id="status-bar">
                     מודל: <span id="model-name">claude-sonnet-4-6</span> |
                     חשיבה: <span id="thinking-mode">כבויה</span> |
@@ -144,30 +148,83 @@
         // Submit task
         // ============================================
         const inputArea = document.getElementById('input-area');
-        const btnSend = document.getElementById('btn-send');
+        const sendButtons = [
+            document.getElementById('btn-send'),
+            document.getElementById('btn-send-main')
+        ].filter(Boolean);
+        const btnClear = document.getElementById('btn-clear');
+        const isTouch = window.matchMedia('(pointer: coarse)').matches;
+        let elapsedTimer = null;
+        let isRunning = false;
 
-        btnSend.addEventListener('click', () => {
-            const prompt = inputArea.value.trim();
-            if (!prompt) {
-                showToast('הקלד משהו בתחילה', 'warning');
+        function setSending(sending) {
+            isRunning = sending;
+            sendButtons.forEach(b => { b.disabled = sending; });
+        }
+
+        function doSend() {
+            if (isRunning) {
+                showToast('משימה כבר רצה — המתן לסיום', 'warning');
                 return;
             }
-
-            submitTask(prompt);
-        });
-
-        // Enter to send (Shift+Enter = newline)
-        inputArea.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                btnSend.click();
+            const prompt = inputArea.value.trim();
+            if (!prompt) {
+                showToast('הקלד משימה קודם', 'warning');
+                return;
             }
+            submitTask(prompt);
+        }
+
+        sendButtons.forEach(b => b.addEventListener('click', doSend));
+
+        if (btnClear) {
+            btnClear.addEventListener('click', () => {
+                inputArea.value = '';
+                inputArea.focus();
+            });
+        }
+
+        // Enter sends on desktop; Ctrl/Cmd+Enter sends everywhere; on touch, plain Enter = newline
+        inputArea.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            if (e.ctrlKey || e.metaKey) { e.preventDefault(); doSend(); return; }
+            if (!isTouch && !e.shiftKey) { e.preventDefault(); doSend(); }
         });
+
+        function botLabel() {
+            return currentBot === 'hafak' ? 'HafakR104' : 'Claude Code';
+        }
+
+        function startElapsed() {
+            stopElapsed();
+            let s = 0;
+            elapsedTimer = setInterval(() => {
+                s++;
+                const el = document.getElementById('elapsed');
+                if (el) el.textContent = s;
+            }, 1000);
+        }
+
+        function stopElapsed() {
+            if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+        }
+
+        function renderRunning(prompt) {
+            const outputArea = document.getElementById('output-area');
+            outputArea.innerHTML =
+                '<div class="result running">' +
+                    '<strong>' + escapeHtml(botLabel()) + ' — רץ…</strong>' +
+                    '<div class="task-prompt">' + escapeHtml(prompt) + '</div>' +
+                    '<div class="meta"><span class="spinner"></span> <span id="elapsed">0</span> שניות</div>' +
+                '</div>';
+        }
 
         function submitTask(prompt) {
             const endpoint = currentBot === 'hafak' ? '/submit-hafak' : '/submit';
-            btnSend.disabled = true;
-            showToast('שליחה...', 'info');
+            setSending(true);
+            inputArea.blur(); // dismiss the mobile keyboard so the running state is visible
+            renderRunning(prompt);
+            startElapsed();
 
             fetch(endpoint, {
                 method: 'POST',
@@ -177,39 +234,49 @@
             .then(r => r.json())
             .then(data => {
                 if (data.error) {
+                    stopElapsed();
                     showToast('שגיאה: ' + data.error, 'error');
-                    btnSend.disabled = false;
+                    displayResult({ bot: botLabel(), status: 'error', error: data.error });
+                    setSending(false);
                 } else {
                     currentTaskId = data.task_id;
                     inputArea.value = '';
-                    showToast('משימה נשלחה בהצלחה', 'success');
                     pollTaskStatus(currentTaskId);
                 }
             })
             .catch(err => {
+                stopElapsed();
                 showToast('שגיאה: ' + err.message, 'error');
-                btnSend.disabled = false;
+                displayResult({ bot: botLabel(), status: 'error', error: err.message });
+                setSending(false);
             });
         }
 
         function pollTaskStatus(taskId) {
-            const maxAttempts = 300; // 5 minutes with 1s intervals
+            const maxAttempts = 360; // ~6 minutes at 1s intervals
             let attempts = 0;
 
             const pollInterval = setInterval(() => {
                 attempts++;
+
+                // Cap checked OUTSIDE the fetch, so a persistently failing poll
+                // (network drop / server restart mid-run) still terminates and frees the UI.
+                if (attempts > maxAttempts) {
+                    clearInterval(pollInterval);
+                    stopElapsed();
+                    setSending(false);
+                    showToast('תם הזמן המוקצה', 'error');
+                    return;
+                }
 
                 fetch(`/task/${taskId}`)
                     .then(r => r.json())
                     .then(task => {
                         if (task.status === 'done' || task.status === 'error' || task.status === 'cancelled') {
                             clearInterval(pollInterval);
+                            stopElapsed();
                             displayResult(task);
-                            btnSend.disabled = false;
-                        } else if (attempts >= maxAttempts) {
-                            clearInterval(pollInterval);
-                            showToast('תם הזמן המוקצה', 'error');
-                            btnSend.disabled = false;
+                            setSending(false);
                         }
                     })
                     .catch(err => {
@@ -220,23 +287,23 @@
 
         function displayResult(task) {
             const outputArea = document.getElementById('output-area');
-            const statusClass = task.status === 'error' ? 'error' : 'success';
+            const ok = task.status === 'done';
+            const statusClass = ok ? 'success' : 'error';
+            const statusText = { done: 'הושלם', error: 'שגיאה', cancelled: 'בוטל' }[task.status] || task.status;
 
             let html = `<div class="result ${statusClass}">`;
-            html += `<strong>${task.bot}</strong> — ${task.status.toUpperCase()}<br>`;
+            html += `<strong>${escapeHtml(task.bot || botLabel())} — ${escapeHtml(statusText)}</strong>`;
 
             if (task.result) {
                 html += `<pre>${escapeHtml(task.result)}</pre>`;
             }
-
             if (task.error) {
-                html += `<pre style="color: #ff6b6b;">שגיאה: ${escapeHtml(task.error)}</pre>`;
+                html += `<pre style="color: #fca5a5;">${escapeHtml(task.error)}</pre>`;
             }
-
             html += `</div>`;
 
             outputArea.innerHTML = html;
-            showToast('משימה הסתיימה', 'success');
+            showToast(ok ? 'המשימה הושלמה' : 'המשימה הסתיימה', ok ? 'success' : 'error');
         }
 
         // ============================================
@@ -328,6 +395,18 @@
         document.addEventListener('mouseup', () => {
             isResizing = false;
         });
+
+        // Clear any inline panel heights left by the desktop resizer when entering the
+        // mobile breakpoint, so a dragged pixel height can't override the stacked layout.
+        const mobileMq = window.matchMedia('(max-width: 768px)');
+        function clearInlinePanelFlex(e) {
+            if (e.matches) {
+                inputPanel.style.flex = '';
+                outputPanel.style.flex = '';
+            }
+        }
+        mobileMq.addEventListener('change', clearInlinePanelFlex);
+        clearInlinePanelFlex(mobileMq);
 
         // ============================================
         // Settings bar
