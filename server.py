@@ -7,7 +7,6 @@ Flask server for Claude Code, HafakR104, and queue management
 from flask import Flask, render_template, request, jsonify, send_file
 import json
 import os
-import shutil
 import tempfile
 import uuid
 import ipaddress
@@ -259,18 +258,16 @@ def run_local_claude(prompt, workdir=None, timeout=CLAUDE_CODE_TIMEOUT):
     """Wake a REAL local Claude Code agent: run the claude CLI headlessly in
     `workdir` and return its text output. Requires the claude CLI to be
     installed and signed in on this machine (override location via CLAUDE_BIN)."""
-    bin_path = shutil.which(CLAUDE_BIN) or CLAUDE_BIN
-    cmd = [
-        bin_path, '-p', prompt,
-        '--permission-mode', CLAUDE_PERMISSION_MODE,
-    ]
-    # On Windows the claude CLI is a .cmd/.bat shim that CreateProcess can't
-    # launch directly (WinError 2) — run it through the shell so it resolves.
-    use_shell = (os.name == 'nt')
+    # Send the prompt over STDIN (not as an argv token) so quoting never mangles
+    # it — passing it as an argument was silently producing empty output on Windows.
+    args = [CLAUDE_BIN, '-p', '--permission-mode', CLAUDE_PERMISSION_MODE]
+    if os.name == 'nt':
+        # claude is a .cmd shim on Windows; run it via cmd.exe so it resolves.
+        args = [os.environ.get('COMSPEC', 'cmd.exe'), '/c'] + args
     proc = subprocess.run(
-        cmd, cwd=workdir or CLAUDE_WORKDIR,
-        capture_output=True, text=True, timeout=timeout,
-        shell=use_shell,
+        args, cwd=workdir or CLAUDE_WORKDIR,
+        input=prompt, capture_output=True, text=True,
+        encoding='utf-8', timeout=timeout,
     )
     out = (proc.stdout or '').strip()
     err = (proc.stderr or '').strip()
