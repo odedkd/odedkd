@@ -7,6 +7,7 @@ Flask server for Claude Code, HafakR104, and queue management
 from flask import Flask, render_template, request, jsonify, send_file
 import json
 import os
+import tempfile
 import uuid
 import ipaddress
 import subprocess
@@ -20,8 +21,9 @@ import io
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
 # Configuration
-QUEUE_FILE = '/tmp/claude_code_queue.json'
-UPLOADS_DIR = '/tmp/cc_uploads/'
+_TMP_DIR = tempfile.gettempdir()
+QUEUE_FILE = os.path.join(_TMP_DIR, 'claude_code_queue.json')
+UPLOADS_DIR = os.path.join(_TMP_DIR, 'cc_uploads')
 RESULTS_DIR = 'results/'
 LOGS_DIR = 'logs/'
 MAX_QUEUE_SIZE = 50
