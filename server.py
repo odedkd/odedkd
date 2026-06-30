@@ -27,6 +27,20 @@ MAX_QUEUE_SIZE = 50
 CLAUDE_CODE_TIMEOUT = 300  # 5 minutes
 HAFAK_TIMEOUT = 60  # 1 minute
 
+# Local Claude Code agent execution (the "wake an agent" wiring).
+# This server runs on the local machine, so it can launch a REAL local Claude
+# Code agent in the facility folder. Override any of these via environment vars:
+#   CLAUDE_BIN             - path/name of the claude CLI (Windows may need 'claude.cmd' or a full path)
+#   CLAUDE_WORKDIR         - directory the agent runs in
+#   CLAUDE_PERMISSION_MODE - permission gate for the agent. Defaults to the SAFE
+#                            'default' mode (approvals still apply); set it
+#                            DELIBERATELY to 'acceptEdits' or 'bypassPermissions'
+#                            for unattended work — bypass runs everything with no
+#                            approval gate, so only enable it knowingly.
+CLAUDE_BIN = os.environ.get('CLAUDE_BIN', 'claude')
+CLAUDE_WORKDIR = os.environ.get('CLAUDE_WORKDIR', r'G:\My Drive\ROTHSCHILD_10_CORE')
+CLAUDE_PERMISSION_MODE = os.environ.get('CLAUDE_PERMISSION_MODE', 'default')
+
 # Ensure directories exist
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -205,30 +219,54 @@ def download_result(task_id):
     return send_file(result_file, as_attachment=True, download_name=f'{task_id}.txt')
 
 # Task processing
-def process_claude_code_task(task_id):
+def _set_task(task_id, **fields):
+    """Reload the queue, patch one task's fields, and save. Reloading each time
+    avoids clobbering other in-flight tasks now that real agent runs take a while."""
     queue = load_queue()
     task = next((t for t in queue if t['id'] == task_id), None)
+    if task is None:
+        return None
+    task.update(fields)
+    save_queue(queue)
+    return task
 
-    if not task:
+def run_local_claude(prompt, workdir=None, timeout=CLAUDE_CODE_TIMEOUT):
+    """Wake a REAL local Claude Code agent: run the claude CLI headlessly in
+    `workdir` and return its text output. Requires the claude CLI to be
+    installed and signed in on this machine (override location via CLAUDE_BIN)."""
+    cmd = [
+        CLAUDE_BIN, '-p', prompt,
+        '--permission-mode', CLAUDE_PERMISSION_MODE,
+    ]
+    proc = subprocess.run(
+        cmd, cwd=workdir or CLAUDE_WORKDIR,
+        capture_output=True, text=True, timeout=timeout,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f'claude exited with code {proc.returncode}')
+    return proc.stdout.strip()
+
+def process_claude_code_task(task_id):
+    task = _set_task(task_id, status='running', started_at=datetime.now().isoformat())
+    if task is None:
         return
 
-    task['status'] = 'running'
-    task['started_at'] = datetime.now().isoformat()
-    save_queue(queue)
-
     try:
-        # Simulate Claude Code execution (in real scenario, use subprocess to call claude CLI)
-        result = f"Processed: {task['prompt'][:100]}..."
+        result = run_local_claude(task['prompt'])
 
-        task['status'] = 'done'
-        task['result'] = result
-        task['completed_at'] = datetime.now().isoformat()
+        # Persist the result so /download/<task_id> can serve it.
+        with open(os.path.join(RESULTS_DIR, f'{task_id}.txt'), 'w', encoding='utf-8') as rf:
+            rf.write(result)
+
+        _set_task(task_id, status='done', result=result,
+                  completed_at=datetime.now().isoformat())
+    except subprocess.TimeoutExpired:
+        _set_task(task_id, status='error',
+                  error=f'Agent timed out after {CLAUDE_CODE_TIMEOUT}s',
+                  completed_at=datetime.now().isoformat())
     except Exception as e:
-        task['status'] = 'error'
-        task['error'] = str(e)
-        task['completed_at'] = datetime.now().isoformat()
-
-    save_queue(queue)
+        _set_task(task_id, status='error', error=str(e),
+                  completed_at=datetime.now().isoformat())
 
 def process_hafak_task(task_id):
     queue = load_queue()
