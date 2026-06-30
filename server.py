@@ -272,9 +272,11 @@ def run_local_claude(prompt, workdir=None, timeout=CLAUDE_CODE_TIMEOUT):
         capture_output=True, text=True, timeout=timeout,
         shell=use_shell,
     )
+    out = (proc.stdout or '').strip()
+    err = (proc.stderr or '').strip()
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f'claude exited with code {proc.returncode}')
-    return proc.stdout.strip()
+        raise RuntimeError(err or out or f'claude exited with code {proc.returncode}')
+    return out or err or '(הסוכן רץ אך לא החזיר פלט)'
 
 def process_claude_code_task(task_id):
     task = _set_task(task_id, status='running', started_at=datetime.now().isoformat())
