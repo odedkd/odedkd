@@ -23,6 +23,13 @@ description: >-
 | 2 | מקומי — מירור D: | `D:\my drive\ROTHSCHILD_10_CORE\00_SITE_PROTOCOL\_QA_CACHE_v2.json` |
 | 3 | ענן — Drive MCP | קריאה לפי file-id: `1RQu-KZd3DogXGexGTJD58AV-Cir5K6tS`; אם נכשל — חפש `_QA_CACHE_v2` בערוץ `00_SITE_PROTOCOL` (תיקייה `1_Xm87aoiaPEaJZ_CJGFi7wTQffgc3CUz`) |
 
+**מקור מורחב — `R10_QA_KNOWLEDGE.html`** (תוצר כריית 166 הסשנים, ‎204 רשומות):
+בתוך ה-HTML מוטמע מערך `const DATA = [...]` עם סכמה: `id, date, question, answer,
+sources, tags, related, topic, repeat_count, value`. אם ה-JSON לא נתן התאמה —
+חפש גם שם. Drive file-id: `1FZfzBwcHnTX9IoCughXq1IQr5Yhquvm4`; מקומית — חפש
+`R10_QA_KNOWLEDGE.html` תחת עץ `ROTHSCHILD_10_CORE` (G: או מירור D:).
+(עד שהמבצע ימזג את שני המקורות ל-JSON אחד — בדוק בשניהם.)
+
 אם אף נתיב לא זמין — אמור זאת מפורשות (אל תבטיח חיבור שאין) ועבור ישירות לשלב 3ג.
 
 ## שלב 2 · חיפוש במטמון
